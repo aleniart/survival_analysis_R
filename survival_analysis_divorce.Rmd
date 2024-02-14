@@ -1,0 +1,328 @@
+---
+title: "Survival analysis - Marriage Dissolution in the U.S."
+author: "aleniart"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    theme: "flatly"
+---
+
+```{r}
+library(survival)
+library(survMisc)
+library(CoxR2)
+library(survminer)
+library(MASS)
+```
+
+The unit of observation is the couple and the event of interest is divorce, with interview and widowhood treated as censoring events. We have three fixed covariates: education of the husband and two indicators of the couple's ethnicity: whether the husband is black and whether the couple is mixed. The variables are:
+
+- ID - a couple number
+- heduc - education of the husband, coded
+        <12 = less than 12 years,
+        12-15 = 12 to 15 years, and
+        >15 = 16 or more years.
+- heblack - coded 1 if the husband is black and 0 otherwise
+- mixed - coded 1 if the husband and wife have different ethnicity (defined as black or other), 0 otherwise
+- years - duration of marriage, from the date of wedding to divorce or censoring (due to widowhood or interview)
+- div - the failure indicator, coded 1 for divorce and 0 for censoring
+
+**Source: https://grodri.github.io/glms/datasets/#divorce**
+
+## Preliminary analysis
+
+### Dataset and basic descriptive statistics 
+```{r}
+ddata <- read.table("divorce_dataset.csv", header = TRUE, sep = ",",dec=".")
+ddata$heduc <- as.factor(ddata$heduc)
+ddata$heblack <- as.factor(ddata$heblack)
+ddata$mixed <- as.factor(ddata$mixed)
+ddata$div <- as.factor(ddata$div)
+summary(ddata)
+```
+Referring to the above statistics, it can be seen that no missing data has been identified.
+
+```{r echo=FALSE}
+ddata <- read.table("divorce_dataset.csv", header = TRUE, sep = ",",dec=".")
+```
+
+Histogram for the variable "years".
+
+```{r}
+hist(ddata$years[ddata$div==1], xlab="Marriage duration in years", ylab="Number of divorces",
+     main = "Histogram for uncensored observations",
+     ylim=c(0,350),
+     xlim=c(0,60))
+
+hist(ddata$years[ddata$div==0], xlab="Marriage duration in years", ylab="Number of divorces",
+     main = "Histogram for censored observations",
+     ylim=c(0,350),
+     xlim=c(0,80))
+```
+
+The histograms represent a quantitative variable indicating the duration of marriage. The first one (uncensored observations) indicates that a significant number of marriages lasted less than 10 years, while a negligible amount lasted more than 35 years. For censored observations, the data is more evenly distributed.
+
+```{r}
+boxplot(ddata$years~ddata$div, main='Detailed statistics for the div variable', xlab= 'Type of event: 0 - not divorced, 1 - divorced', ylab='Marriage duration')
+
+by(ddata$years, ddata$div, summary)
+```
+
+Couples who have experienced divorce tend to have significantly shorter average durations (median as well) of marriage compared to couples who have not yet reported a divorce.
+
+Bar plot for the variable "heduc".
+
+```{r}
+barplot(table(ddata$heduc),
+        col = c("yellow","red","green"), horiz = TRUE,
+        names.arg = c("<12", "12-15",">=16" ),
+        xlab = "Number of men", ylab = "Years of education",
+        main = "Husbend's years of education", xlim = c(0,2000))
+```
+
+Most of the men surveyed had education lasting a total of at least 16 years.
+
+In addition, we will look at the husband's years of education broken down into the occurrence of divorce or not.
+
+```{r}
+par(mfrow=c(1,2))  # Setting up the layout for one row and two columns of plots
+
+# First plot for divorces (div == 1)
+barplot(table(ddata$heduc[ddata$div==1]),
+        col = c("lightyellow","lightgreen","red"),
+        names.arg = c("<12", "12-15",">=16" ),
+        xlab = "Number of divorced men", ylim=c(0,1500))
+text(1:3, table(ddata$heduc[ddata$div == 1]), labels = table(ddata$heduc[ddata$div == 1]), pos = 3)
+
+# Second plot for censoring (div == 0)
+barplot(table(ddata$heduc[ddata$div == 0]),
+        col = c("lightyellow","red","lightgreen"),
+        names.arg = c("<12", "12-15",">=16" ), ylim=c(0,1500),
+        xlab = "Number of non-divorced men",
+        axes=F)
+text(1:3, table(ddata$heduc[ddata$div == 0]), labels = table(ddata$heduc[ddata$div == 0]), pos = 3)
+
+par(mfrow=c(1,1))  # Restoring the default plot layout
+
+```
+In the case of an additional breakdown of the occurrence of divorce, there is an evident dominance of men, in both groups, who have at least 16 years of education. At first glance, the distribution of the data by occurrence of divorce appears to be reasonably proportional, however, only detailed testing will allow us to assess whether the variable 'heduc' is a relevant predictor.
+
+Comparison of marriage duration to mixed ethnicity and skin color.
+
+```{r}
+#heblack
+boxplot(ddata$years~ddata$heblack, main='Detailed statistics for the heblack variable', xlab='Type of event: 0 - otherwise, 1 - black', ylab='Marriage duration')
+
+
+#mixed
+boxplot(ddata$years~ddata$mixed, main='Detailed statistics for the mixed variable', xlab='Type of event: 0 - otherwise, 1 - mixed', ylab='Marriage duration')
+
+#overall summary
+by(ddata$years, ddata$heblack, summary)
+by(ddata$years, ddata$mixed, summary)
+
+```
+
+Overall, the statistics are very similar for both variables. However, in the case of the 'heblack' variable and the 'black' variant, the average marriage duration seems to be slightly lower than for the other variants.
+
+## Survival analysis
+
+### Kaplan-Meier and Nelson-Aalen estimators
+
+__Kaplan-Meier estimator:__
+
+```{r}
+km <- survfit(Surv(years, div) ~ 1, conf.type="log", data=ddata)
+#summary(km)
+plot(km, xlim= c(0,70), xlab="Time", ylab="Survival probability")
+
+```
+
+The probability of a marriage surviving at least one year is 0.987. 100% of marriages survive almost half a year (0.427). According to the Kaplan-Meier estimator, 42% of marriages will cease to exist before reaching approximately 50 years.
+
+__Cumulative hazards function graph:__
+
+```{r}
+plot(km, xlim= c(0,70), fun="cumhaz",xlab="Time", ylab="Cumulative hazard")
+lines(km, fun="cumhaz",col="blue")
+```
+
+__Nelson-Aalen estimator:__
+
+```{r}
+Nels=survfit(Surv(years, div) ~ 1, conf.type ="log-log", type="fleming-harrington", data=ddata)
+#summary(Nels)
+plot(Nels, xlim= c(0,70), xlab="Time", ylab="Survival probability")
+```
+
+The results of the Nelson-Aalen estimator are very similar to the Kaplan-Meier estimator. The probability of marriage survival for at least one year is 0.987. 100% of marriages will survive for almost half a year (0.419). According to Nelson-Aalen, 42% of marriages will also cease to exist before before reaching approximately 50 years.
+
+__Cumulative hazards function graph:__
+
+```{r}
+plot(Nels, xlim= c(0,70), fun="cumhaz",xlab="Time", ylab="Cumulative hazard")
+lines(Nels, fun="cumhaz",col="red")
+```
+
+### Survival curves (Kaplan-Meier estimators)
+
+__Husband's education variable:__
+
+```{r}
+km = survfit(Surv(years, div) ~ heduc, conf.type="plain", data=ddata)
+#summary(km)
+plot(km, xlim= c(0,70), col=c("green","red","blue"))
+legend("topright", c("<12 years", "12-15 years"," >=16 years"),
+       lty=1, col=c("green","blue","red"),bty="c")
+```
+
+Regarding the impact of the husband's education level, the class corresponding to "12-15 years" has a lower probability of survival. Marriages in which the husband had less than 12 years of education lasted longer.
+
+__Husband's skin color variable:__
+
+```{r}
+km = survfit(Surv(years, div) ~ heblack, conf.type="plain", data=ddata)
+#summary(km)
+plot(km, xlim= c(0,70), col=c("red","blue"))
+legend("topright", c("Otherwise", "Black"),
+       lty=1, col=c("red","blue"),bty="c")
+```
+
+The graph above indicates that the probability of survival if the "husband is black" in a marriage is lower than if the "husband is not black". Moreover, marriages in which the husband's skin color was other than black lasted longer
+
+__Mixed-ethnic marriage variable:__
+
+```{r}
+km = survfit(Surv(years, div) ~ mixed, conf.type="plain", data=ddata)
+#summary(km)
+plot(km,  xlim= c(0,70), col=c("red","blue"))
+legend("topright", c("Not mixed", "Mixed"),
+       lty=1, col=c("red","blue"),bty="c")
+```
+
+The graph above indicates that the probability of survival if the couple is mixed ethnicity is lower than if the couple is not. Additionally, marriages in which the spouses were the same ethnicity lasted longer.
+
+
+### Tests for comparing survival curves
+
+**Assumptions**
+
+**α** = 0.05
+
+*Log-rank test hypothesis:*
+
+**H0:** The two survival curves are similar.
+
+**H1:** The two survival curves are not similar.
+
+
+*Peto-Peto test hypothesis:*
+
+**H0:** The hazard functions of the groups being compared are proportional over time.
+
+**H1:** The hazard functions of the groups being compared are not proportional over time.
+
+
+__Husband's education variable:__
+
+```{r}
+survdiff(Surv(years, div) ~ heduc,rho=0,data=ddata) #Log-rank test
+survdiff(Surv(years, div) ~ heduc,rho=1,data=ddata) #Peto-Peto test
+```
+**Conclusions:** In both the log-rank test and the Peto-Peto test, the p-value is below the chosen alpha level. This indicates that the two survival curves are not similar, and the hazard functions of the compared groups are not proportional over time. Moreover, the 'heduc' variable is considered as a significant predictor. 
+
+However, it was still decided to perform pairwise comparisons for variants of this variable.
+
+```{r}
+pairwise_survdiff(Surv(years, div)~heduc,data=ddata, rho=0, p.adjust.method ="holm")
+
+heducdata<-ddata$heduc
+heducdata[which(heducdata=='>15')]='12-15'
+ddata$heduc=heducdata
+pairwise_survdiff(Surv(years, div)~heduc,data=ddata, rho=0, p.adjust.method ="holm")
+```
+
+**Conclusions:** In the pairwise comparison, it was identified that the variant '>15' is statistically insignificant; thus, it was merged with the '12-15' variant, resulting in one significant variant.
+
+__Husband's skin color variable:__
+
+```{r}
+survdiff(Surv(years, div) ~ heblack,rho=0,data=ddata) #test Log-rank
+survdiff(Surv(years, div) ~ heblack,rho=1,data=ddata) #test Peto-Peto
+```
+**Conclusions:** In both the log-rank test and the Peto-Peto test, the p-value is below the chosen alpha level. This indicates that the two survival curves are not similar, and the hazard functions of the compared groups are not proportional over time. Moreover, the 'heblack' variable is considered as a significant predictor.
+
+__Mixed-ethnic marriage variable:__
+
+```{r}
+survdiff(Surv(years, div) ~ mixed,rho=0,data=ddata) #test Log-rank
+survdiff(Surv(years, div) ~ mixed,rho=1,data=ddata) #test Peto-Peto
+```
+
+**Conclusions:** In both the log-rank test and the Peto-Peto test, the p-value is below the chosen alpha level. This indicates that the two survival curves are not similar, and the hazard functions of the compared groups are not proportional over time. Moreover, the 'mixed' variable is considered as a significant predictor.
+
+### Verification of the proportionality assumption
+
+**Assumptions**
+
+**α** = 0.05
+
+*Proportionality test hypothesis:*
+
+**H0:** The effect of each variable on the risk of the event remains constant over time.
+
+**H1:** The effect of at least one variable on the risk of the event changes over time.
+
+```{r}
+Cox=coxph(Surv(years, div)~heduc+heblack+mixed,data=ddata)
+proportionality=cox.zph(Cox,transform="identity")
+plot(proportionality)
+print(proportionality)
+```
+
+**Conclusions:** The p-value is above the chosen alpha level for the 'heduc' and 'mixed' variables. Therefore, it can be assumed that only these two variables satisfy the proportionality assumption.
+
+### Outliers identification
+
+```{r}
+COX<-coxph(Surv(years, div)~heduc+mixed, data=ddata)
+deviance=residuals(COX,type="deviance")
+s=COX$linear.predictors
+plot(s,deviance,xlab="Linear predictor",ylab="Residuals",cex=0.5, pch=20)
+abline(h=3,lty=3)
+ddata$deviance=deviance
+c1=which(ddata$deviance>3) # 13 outliers
+```
+Above the threshold, there are 13 observations that can be considered as outliers.
+
+In further analysis outliers will be excluded from the dataset.
+
+
+### Final Cox model
+
+```{r echo=FALSE}
+c=sort(unique(c(c1)))
+ddata2=ddata[-c,] #Reduced dataset, 13 observations removed
+```
+
+```{r}
+Cox2<-coxph(Surv(years, div)~heduc+mixed, data=ddata2)
+
+stepAIC(Cox2,direction="backward")
+```
+**Summary**
+
+- The Cox Hazard Model proved to be successful - the assumption of proportionality was met.
+
+- All predictors appeared to be relevent, however, the 'heduc' variable required grouping.
+
+- It can be inferred that the model structure was appropriately chosen for the dataset.
+
+
+__Model interpretation:__
+
+- `Heduc12-15`: At any given time, the risk of divorce in marriages where the husband has from 12 to 15 years of education is 1.274 (27.4%) times higher than in marriages where the husband has less than 12 years of education.
+
+
+- `Mixed`: At any given time, the risk of divorce in marriages of mixed ethnicities is 1.36 (35%) times higher than in marriages of the same ethnic background.
